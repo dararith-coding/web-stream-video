@@ -139,32 +139,33 @@ function applyTracks() {
     t.label = subLabel(sb);
     t.srclang = sb.lang.length === 2 || sb.lang.length === 3 ? sb.lang : 'und';
     t.src = '/subtitle?path=' + encodeURIComponent(videos[current].path) +
-      '&index=' + sb.index + (offset ? '&start=' + offset.toFixed(2) : '');
+      (sb.file ? '&file=' + encodeURIComponent(sb.file) : '&index=' + sb.index) + (offset ? '&start=' + offset.toFixed(2) : '');
     video.appendChild(t);
-    t.track.mode = String(sb.index) === sel ? 'showing' : 'disabled';
+    t.track.mode = sb.id === sel ? 'showing' : 'disabled';
   });
 }
 const subLabel = (sb) => {
   let name = sb.title;
   try { name = name || new Intl.DisplayNames(['en'], { type: 'language' }).of(sb.lang); } catch {}
-  return (name && sb.lang !== 'und' ? name : (name || 'Track ' + (sb.index + 1))) + (sb.forced ? ' (forced)' : '');
+  return (name && sb.lang !== 'und' ? name : (name || 'Track ' + (+sb.id.slice(1) + 1))) + (sb.forced ? ' (forced)' : '') + (sb.external ? ' (file)' : '');
 };
 function buildCcMenu() {
   const cc = $('cc');
   cc.innerHTML = '';
   cc.style.display = subs.length ? '' : 'none';
   cc.add(new Option('CC: Off', 'off'));
-  subs.forEach(sb => cc.add(new Option('CC: ' + subLabel(sb), String(sb.index))));
+  subs.forEach(sb => cc.add(new Option('CC: ' + subLabel(sb), sb.id)));
   // restore preferred language (first non-forced match)
-  const pref = subs.find(sb => sb.lang === ccChoice && !sb.forced) || subs.find(sb => sb.lang === ccChoice);
-  cc.value = pref ? String(pref.index) : 'off';
+  const same = (a, b) => a === b || (a !== 'und' && b !== 'und' && a.slice(0, 2) === b.slice(0, 2)); // en ~ eng
+  const pref = subs.find(sb => same(sb.lang, ccChoice) && !sb.forced) || subs.find(sb => same(sb.lang, ccChoice));
+  cc.value = pref ? pref.id : 'off';
 }
 $('cc').onchange = () => {
-  const sb = subs.find(x => String(x.index) === $('cc').value);
+  const sb = subs.find(x => x.id === $('cc').value);
   ccChoice = sb ? sb.lang : 'off';
   store.set('ccLang', ccChoice);
   Array.from(video.textTracks).forEach((tt, i) => {
-    tt.mode = subs[i] && String(subs[i].index) === $('cc').value ? 'showing' : 'disabled';
+    tt.mode = subs[i] && subs[i].id === $('cc').value ? 'showing' : 'disabled';
   });
 };
 // iOS/Safari play HLS natively (Chrome/Brave/Firefox report '' here and use the MP4 pipe).

@@ -72,6 +72,7 @@ function probe(file) {
           .map((s, i) => ({ s, i }))
           .filter(({ s }) => TEXT_SUBS.has(s.codec_name))
           .map(({ s, i }) => ({
+            id: 'e' + i,
             index: i, // index among subtitle streams (for -map 0:s:i)
             lang: (s.tags && s.tags.language) || 'und',
             title: (s.tags && s.tags.title) || '',
@@ -106,12 +107,45 @@ function resolveVideo(rel) {
   return { full };
 }
 
+// External subtitle files next to the video: "<video name>.srt" or "<video name>.<lang|label>.srt".
+const SUB_EXTS = new Set(['.srt', '.vtt', '.ass', '.ssa']);
+function externalSubs(videoFull) {
+  const dir = path.dirname(videoFull);
+  const base = path.parse(videoFull).name;
+  let files;
+  try { files = fs.readdirSync(dir); } catch { return []; }
+  return files
+    .filter((f) => SUB_EXTS.has(path.extname(f).toLowerCase()) && !f.startsWith('.'))
+    .map((f) => ({ f, stem: path.parse(f).name }))
+    .filter(({ stem }) => stem === base || stem.startsWith(base + '.'))
+    .sort((a, b) => collator.compare(a.f, b.f))
+    .map(({ f, stem }, i) => {
+      const tag = stem === base ? '' : stem.slice(base.length + 1); // e.g. "en", "English", "en.forced"
+      const parts = tag.split('.').filter(Boolean);
+      const forced = parts.includes('forced');
+      const rest = parts.filter((p) => p !== 'forced' && p !== 'sdh');
+      const code = rest.find((p) => /^[a-z]{2,3}$/i.test(p));
+      return {
+        id: 'x' + i,
+        file: path.relative(VIDEO_ROOT, path.join(dir, f)).split(path.sep).join('/'),
+        lang: code ? code.toLowerCase() : 'und',
+        title: code ? (parts.includes('sdh') ? 'SDH' : '') : rest.join(' '),
+        forced,
+        external: true,
+      };
+    });
+}
+
 app.get('/api/info', async (req, res) => {
   const r = resolveVideo(req.query.path);
   if (!r.full) return res.status(r.status).send(r.msg);
   try {
     const info = await probe(r.full);
-    res.json({ duration: info.duration, transcoded: needsTranscode(r.full), subtitles: info.subtitles });
+    res.json({
+      duration: info.duration,
+      transcoded: needsTranscode(r.full),
+      subtitles: [...info.subtitles, ...externalSubs(r.full)],
+    });
   } catch (err) {
     console.error(err);
     res.status(500).send('Probe failed');
@@ -120,29 +154,75 @@ app.get('/api/info', async (req, res) => {
 
 // Extract one embedded subtitle track as WebVTT. `start` shifts cue times so they
 // line up with a transcoded stream that was restarted at that offset.
+// Shift WebVTT cue times back by `start` seconds (for streams restarted at an offset).
+// Cues that end before the offset are dropped; cues spanning it are clamped to 0.
+function shiftVtt(vtt, start) {
+  if (!start) return vtt;
+  const toSec = (t) => {
+    const p = t.split(':').map(parseFloat);
+    return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1];
+  };
+  const fmt = (x) => {
+    const h = Math.floor(x / 3600), m = Math.floor((x % 3600) / 60), sec = x - h * 3600 - m * 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${sec.toFixed(3).padStart(6, '0')}`;
+  };
+  const TIME = /^(\d+(?::\d+){1,2}\.\d+) --> (\d+(?::\d+){1,2}\.\d+)(.*)$/;
+  const [header, ...blocks] = vtt.replace(/\r\n/g, '\n').split(/\n\n+/);
+  const out = [header];
+  for (const block of blocks) {
+    const lines = block.split('\n');
+    const ti = lines.findIndex((l) => TIME.test(l));
+    if (ti === -1) { out.push(block); continue; } // NOTE/STYLE blocks
+    const [, a, b, rest] = lines[ti].match(TIME);
+    const end = toSec(b) - start;
+    if (end <= 0) continue;
+    lines[ti] = `${fmt(Math.max(0, toSec(a) - start))} --> ${fmt(end)}${rest}`;
+    out.push(lines.join('\n'));
+  }
+  return out.join('\n\n') + '\n';
+}
+
 app.get('/subtitle', async (req, res) => {
   const r = resolveVideo(req.query.path);
   if (!r.full) return res.status(r.status).send(r.msg);
-  const idx = parseInt(req.query.index, 10);
-  if (!Number.isInteger(idx) || idx < 0) return res.status(400).send('Bad index');
   const start = Math.max(0, parseFloat(req.query.start) || 0);
-
-  try {
-    const info = await probe(r.full);
-    if (!info.subtitles.some((s) => s.index === idx)) return res.status(404).send('No such subtitle');
-  } catch (err) {
-    return res.status(500).send('Probe failed');
-  }
-
   const args = ['-v', 'error'];
-  if (start > 0) args.push('-ss', String(start));
-  args.push('-i', r.full, '-map', `0:s:${idx}`, '-f', 'webvtt', 'pipe:1');
+
+  if (req.query.file !== undefined) {
+    // External file: must be one of this video's detected sidecar subtitles.
+    const ext = externalSubs(r.full).find((x) => x.file === req.query.file);
+    if (!ext) return res.status(404).send('No such subtitle');
+    const subPath = path.join(VIDEO_ROOT, ext.file);
+    // Non-UTF-8 files (e.g. Windows-1252) need an explicit charset for ffmpeg.
+    try {
+      new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(subPath));
+    } catch {
+      args.push('-sub_charenc', 'WINDOWS-1252');
+    }
+    args.push('-i', subPath, '-f', 'webvtt', 'pipe:1');
+  } else {
+    const idx = parseInt(req.query.index, 10);
+    if (!Number.isInteger(idx) || idx < 0) return res.status(400).send('Bad index');
+    try {
+      const info = await probe(r.full);
+      if (!info.subtitles.some((s) => s.index === idx)) return res.status(404).send('No such subtitle');
+    } catch (err) {
+      return res.status(500).send('Probe failed');
+    }
+    args.push('-i', r.full, '-map', `0:s:${idx}`, '-f', 'webvtt', 'pipe:1');
+  }
   const ff = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const chunks = [];
+  ff.stdout.on('data', (d) => chunks.push(d));
   ff.stderr.on('data', (d) => console.error('[ffmpeg sub]', d.toString().trim()));
-  ff.on('error', () => res.headersSent ? res.destroy() : res.status(500).send('ffmpeg failed'));
-  res.set('Content-Type', 'text/vtt; charset=utf-8');
-  res.set('Cache-Control', 'no-store');
-  ff.stdout.pipe(res);
+  ff.on('error', () => { if (!res.headersSent) res.status(500).send('ffmpeg failed'); });
+  ff.on('close', (code) => {
+    if (res.headersSent || res.destroyed) return;
+    if (code !== 0) return res.status(500).send('Subtitle conversion failed');
+    res.set('Content-Type', 'text/vtt; charset=utf-8');
+    res.set('Cache-Control', 'no-store');
+    res.send(shiftVtt(Buffer.concat(chunks).toString('utf8'), start));
+  });
   res.on('close', () => ff.kill('SIGKILL'));
 });
 

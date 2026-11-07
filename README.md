@@ -12,6 +12,9 @@ A small self-hosted video streaming server and web player. Drop videos into `src
   - Chrome/Edge/Brave/Firefox: fragmented MP4 stream (seeking restarts the stream at the new time)
   - Safari/iOS: HLS, with native seeking
 - **Captions menu** – embedded text subtitles (SRT/ASS/mov_text/WebVTT) are extracted and converted to WebVTT
+- **External subtitle files** – put `.srt`, `.vtt`, `.ass` or `.ssa` files next to a video, named after it:
+  `Movie.mkv` → `Movie.srt`, `Movie.en.srt`, `Movie.es.forced.srt`, `Movie.English.srt`.
+  They appear in the CC menu marked "(file)". Non-UTF-8 files (e.g. Windows-1252) are handled.
 - Remembers your last video, autoplay setting and caption language
 
 ## Requirements
@@ -53,10 +56,11 @@ Set in a `.env` file (optional):
 | Endpoint | Description |
 | -------- | ----------- |
 | `GET /api/videos` | List all videos (recursive) |
-| `GET /api/info?path=…` | Duration, whether transcoded, subtitle tracks |
+| `GET /api/info?path=…` | Duration, whether transcoded, subtitle tracks (embedded + external) |
 | `GET /stream?path=…[&start=s]` | Stream a video (range requests; MKV via ffmpeg) |
 | `GET /hls/stream.m3u8?path=…` | HLS playlist for Safari/iOS |
 | `GET /subtitle?path=…&index=N[&start=s]` | One embedded subtitle track as WebVTT |
+| `GET /subtitle?path=…&file=…[&start=s]` | One external subtitle file as WebVTT |
 
 Paths are relative to `src/videos/` and are validated to stay inside it.
 
