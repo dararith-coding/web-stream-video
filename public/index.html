@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stream Video</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --panel-2: #20242d; --text: #e8eaf0;
+    --muted: #8b93a7; --accent: #4f8cff; --border: #2a2f3a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, sans-serif; height: 100vh; display: flex; }
+  #player-area { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
+  #stage { position: relative; background: #000; border-radius: 10px; overflow: hidden;
+    flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #error { position: absolute; inset: auto 12px 12px 12px; background: rgba(160,30,30,.9);
+    padding: 10px 12px; border-radius: 8px; display: none; }
+  #title { font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #subtitle { color: var(--muted); font-size: 12px; }
+  .controls { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .seek-row { display: flex; align-items: center; gap: 10px; }
+  .time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 48px; text-align: center; }
+  input[type=range] { accent-color: var(--accent); cursor: pointer; }
+  #seek { flex: 1; }
+  .btn-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  button, select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 11px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled), select:hover { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; min-width: 44px; }
+  .spacer { flex: 1; }
+  .vol { display: flex; align-items: center; gap: 6px; }
+  .vol input { width: 90px; }
+  label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; }
+
+  #sidebar { width: 340px; background: var(--panel); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; min-height: 0; }
+  #sidebar header { padding: 14px 14px 10px; border-bottom: 1px solid var(--border); }
+  #sidebar h2 { margin: 0 0 8px; font-size: 15px; }
+  #search { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font: inherit; }
+  #list { overflow-y: auto; flex: 1; padding: 6px 0 12px; }
+  .folder { padding: 12px 14px 4px; color: var(--muted); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .04em; word-break: break-all; }
+  .item { display: flex; gap: 8px; padding: 8px 14px; cursor: pointer; border-left: 3px solid transparent; }
+  .item:hover { background: var(--panel-2); }
+  .item.active { background: var(--panel-2); border-left-color: var(--accent); }
+  .item .n { color: var(--muted); min-width: 22px; text-align: right; font-variant-numeric: tabular-nums; }
+  .item .t { flex: 1; min-width: 0; word-break: break-word; }
+  .item .s { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .empty { padding: 20px 14px; color: var(--muted); }
+
+  @media (max-width: 800px) {
+    body { flex-direction: column; height: auto; min-height: 100vh; }
+    #player-area { flex: none; }
+    #stage { aspect-ratio: 16/9; flex: none; }
+    #sidebar { width: auto; border-left: 0; border-top: 1px solid var(--border); max-height: 60vh; }
+  }
+</style>
+</head>
+<body>
+<main id="player-area">
+  <div id="stage">
+    <video id="video" playsinline></video>
+    <div id="error"></div>
+  </div>
+  <div>
+    <div id="title">Select a video</div>
+    <div id="subtitle">&nbsp;</div>
+  </div>
+  <div class="controls">
+    <div class="seek-row">
+      <span class="time" id="cur">0:00</span>
+      <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="Seek">
+      <span class="time" id="dur">0:00</span>
+    </div>
+    <div class="btn-row">
+      <button id="prev" title="Previous (P)">⏮</button>
+      <button id="back" title="Back 10s (←)">⏪ 10</button>
+      <button id="play" class="primary" title="Play/Pause (Space)">▶</button>
+      <button id="fwd" title="Forward 10s (→)">10 ⏩</button>
+      <button id="next" title="Next (N)">⏭</button>
+      <span class="spacer"></span>
+      <label class="chk"><input type="checkbox" id="autoplay" checked> Autoplay next</label>
+      <label class="chk"><input type="checkbox" id="loop"> Loop</label>
+      <select id="cc" title="Captions" style="display:none"></select>
+      <select id="speed" title="Speed">
+        <option value="0.5">0.5×</option><option value="0.75">0.75×</option>
+        <option value="1" selected>1×</option><option value="1.25">1.25×</option>
+        <option value="1.5">1.5×</option><option value="2">2×</option>
+      </select>
+      <span class="vol">
+        <button id="mute" title="Mute (M)">🔊</button>
+        <input type="range" id="volume" min="0" max="1" step="0.05" value="1" aria-label="Volume">
+      </span>
+      <button id="fs" title="Fullscreen (F)">⛶</button>
+    </div>
+  </div>
+</main>
+
+<aside id="sidebar">
+  <header>
+    <h2>Library <span id="count" style="color:var(--muted);font-weight:400"></span></h2>
+    <input id="search" type="search" placeholder="Search videos…">
+  </header>
+  <div id="list"></div>
+</aside>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const video = $('video');
+let videos = [];      // full library (sorted)
+let current = -1;     // index in `videos`
+// Transcoded (MKV) streams are not byte-seekable, so we restart the stream at an offset.
+let offset = 0;       // seconds into the file where the current stream starts
+let totalDur = 0;     // known duration for transcoded streams
+let transcoded = false;
+const getTime = () => offset + (video.currentTime || 0);
+const getDur = () => (transcoded ? totalDur : video.duration) || 0;
+function seekTo(t) {
+  t = Math.max(0, Math.min(getDur() || t, t));
+  if (!transcoded) { video.currentTime = t; return; }
+  const wasPlaying = !video.paused;
+  loadStream(t);
+  if (wasPlaying) video.play().catch(() => {});
+}
+let subs = [];         // available subtitle tracks for the current video
+let ccChoice = 'off'; // 'off' or a language code (restored from localStorage below)
+function applyTracks() {
+  video.querySelectorAll('track').forEach(t => t.remove());
+  const sel = $('cc').value;
+  subs.forEach((sb) => {
+    const t = document.createElement('track');
+    t.kind = 'subtitles';
+    t.label = subLabel(sb);
+    t.srclang = sb.lang.length === 2 || sb.lang.length === 3 ? sb.lang : 'und';
+    t.src = '/subtitle?path=' + encodeURIComponent(videos[current].path) +
+      '&index=' + sb.index + (offset ? '&start=' + offset.toFixed(2) : '');
+    video.appendChild(t);
+    t.track.mode = String(sb.index) === sel ? 'showing' : 'disabled';
+  });
+}
+const subLabel = (sb) => {
+  let name = sb.title;
+  try { name = name || new Intl.DisplayNames(['en'], { type: 'language' }).of(sb.lang); } catch {}
+  return (name && sb.lang !== 'und' ? name : (name || 'Track ' + (sb.index + 1))) + (sb.forced ? ' (forced)' : '');
+};
+function buildCcMenu() {
+  const cc = $('cc');
+  cc.innerHTML = '';
+  cc.style.display = subs.length ? '' : 'none';
+  cc.add(new Option('CC: Off', 'off'));
+  subs.forEach(sb => cc.add(new Option('CC: ' + subLabel(sb), String(sb.index))));
+  // restore preferred language (first non-forced match)
+  const pref = subs.find(sb => sb.lang === ccChoice && !sb.forced) || subs.find(sb => sb.lang === ccChoice);
+  cc.value = pref ? String(pref.index) : 'off';
+}
+$('cc').onchange = () => {
+  const sb = subs.find(x => String(x.index) === $('cc').value);
+  ccChoice = sb ? sb.lang : 'off';
+  store.set('ccLang', ccChoice);
+  Array.from(video.textTracks).forEach((tt, i) => {
+    tt.mode = subs[i] && String(subs[i].index) === $('cc').value ? 'showing' : 'disabled';
+  });
+};
+// iOS/Safari play HLS natively (Chrome/Brave/Firefox report '' here and use the MP4 pipe).
+const nativeHls = !!video.canPlayType('application/vnd.apple.mpegurl');
+function loadStream(start, hls = false) {
+  offset = start;
+  const v = videos[current];
+  video.src = hls
+    ? '/hls/stream.m3u8?path=' + encodeURIComponent(v.path)
+    : '/stream?path=' + encodeURIComponent(v.path) + (start ? '&start=' + start.toFixed(2) : '');
+  video.playbackRate = parseFloat($('speed').value);
+  applyTracks();
+}
+
+const fmtTime = (s) => {
+  if (!isFinite(s)) return '0:00';
+  s = Math.floor(s);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
+};
+const fmtSize = (b) => b > 1e9 ? (b / 1e9).toFixed(2) + ' GB' : (b / 1e6).toFixed(0) + ' MB';
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+ccChoice = store.get('ccLang', 'off');
+
+async function load() {
+  const res = await fetch('/api/videos');
+  videos = await res.json();
+  $('count').textContent = `(${videos.length})`;
+  renderList();
+  if (videos.length) {
+    const last = store.get('lastVideo', null);
+    const idx = videos.findIndex(v => v.path === last);
+    select(idx >= 0 ? idx : 0, false);
+  }
+}
+
+function renderList() {
+  const q = $('search').value.trim().toLowerCase();
+  const list = $('list');
+  list.innerHTML = '';
+  let lastFolder = null, shown = 0;
+  videos.forEach((v, i) => {
+    if (q && !(v.path.toLowerCase().includes(q))) return;
+    shown++;
+    if (v.folder !== lastFolder) {
+      lastFolder = v.folder;
+      const f = document.createElement('div');
+      f.className = 'folder';
+      f.textContent = v.folder || 'Root';
+      list.appendChild(f);
+    }
+    const el = document.createElement('div');
+    el.className = 'item' + (i === current ? ' active' : '');
+    el.dataset.index = i;
+    el.innerHTML = '<span class="n"></span><span class="t"></span><span class="s"></span>';
+    el.children[0].textContent = i + 1;
+    el.children[1].textContent = v.name;
+    el.children[2].textContent = fmtSize(v.size);
+    el.onclick = () => select(i, true);
+    list.appendChild(el);
+  });
+  if (!shown) list.innerHTML = '<div class="empty">No videos found in src/videos.</div>';
+}
+
+function select(i, autoplay) {
+  if (i < 0 || i >= videos.length) return;
+  current = i;
+  const v = videos[i];
+  $('error').style.display = 'none';
+  transcoded = /\.mkv$/i.test(v.path) && !nativeHls; // HLS is natively seekable
+  const hls = /\.mkv$/i.test(v.path) && nativeHls;
+  totalDur = 0;
+  $('dur').textContent = '0:00';
+  $('seek').value = 0;
+  subs = [];
+  buildCcMenu();
+  loadStream(0, hls);
+  fetch('/api/info?path=' + encodeURIComponent(v.path))
+    .then(r => r.json())
+    .then(info => {
+      if (videos[current] !== v) return;
+      if (transcoded) { totalDur = info.duration; $('dur').textContent = fmtTime(totalDur); }
+      subs = info.subtitles || [];
+      buildCcMenu();
+      applyTracks();
+    })
+    .catch(() => {});
+  $('title').textContent = v.name;
+  $('subtitle').textContent = (v.folder ? v.folder + ' · ' : '') + `${i + 1} of ${videos.length}`;
+  document.title = v.name;
+  store.set('lastVideo', v.path);
+  document.querySelectorAll('.item').forEach(el =>
+    el.classList.toggle('active', +el.dataset.index === i));
+  const active = document.querySelector('.item.active');
+  if (active) active.scrollIntoView({ block: 'nearest' });
+  updateNav();
+  if (autoplay) video.play().catch(() => {});
+}
+
+const updateNav = () => {
+  $('prev').disabled = current <= 0;
+  $('next').disabled = current < 0 || current >= videos.length - 1;
+};
+const next = () => select(current + 1, true);
+const prev = () => {
+  // Like most players: restart if >3s in, otherwise go to previous
+  if (getTime() > 3) seekTo(0); else select(current - 1, true);
+};
+const toggle = () => video.paused ? video.play().catch(() => {}) : video.pause();
+const skip = (d) => seekTo(getTime() + d);
+
+$('play').onclick = toggle;
+video.onclick = toggle;
+$('next').onclick = next;
+$('prev').onclick = prev;
+$('back').onclick = () => skip(-10);
+$('fwd').onclick = () => skip(10);
+$('fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : $('stage').requestFullscreen();
+$('search').oninput = renderList;
+$('speed').onchange = () => { video.playbackRate = parseFloat($('speed').value); };
+$('loop').onchange = () => { video.loop = $('loop').checked; };
+$('mute').onclick = () => { video.muted = !video.muted; };
+$('volume').oninput = (e) => { video.volume = +e.target.value; video.muted = false; };
+$('autoplay').checked = store.get('autoplayNext', true);
+$('autoplay').onchange = () => store.set('autoplayNext', $('autoplay').checked);
+
+video.onplay = video.onpause = () => { $('play').textContent = video.paused ? '▶' : '⏸'; };
+video.onvolumechange = () => {
+  $('mute').textContent = video.muted || video.volume === 0 ? '🔇' : '🔊';
+  $('volume').value = video.muted ? 0 : video.volume;
+};
+video.onloadedmetadata = () => { $('dur').textContent = fmtTime(getDur()); };
+let seeking = false;
+video.ontimeupdate = () => {
+  $('cur').textContent = fmtTime(getTime());
+  if (!seeking && getDur()) $('seek').value = (getTime() / getDur()) * 1000;
+};
+$('seek').oninput = () => {
+  seeking = true;
+  if (getDur()) $('cur').textContent = fmtTime(($('seek').value / 1000) * getDur());
+};
+$('seek').onchange = () => {
+  if (getDur()) seekTo(($('seek').value / 1000) * getDur());
+  seeking = false;
+};
+video.onended = () => {
+  if (!video.loop && $('autoplay').checked && current < videos.length - 1) next();
+};
+video.onerror = () => {
+  const e = $('error');
+  e.textContent = 'Cannot play this file. Try the next video.';
+  e.style.display = 'block';
+};
+
+document.addEventListener('keydown', (e) => {
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) && e.target.type !== 'range' && e.target.type !== 'checkbox') return;
+  switch (e.key) {
+    case ' ': case 'k': e.preventDefault(); toggle(); break;
+    case 'ArrowLeft': e.preventDefault(); skip(-10); break;
+    case 'ArrowRight': e.preventDefault(); skip(10); break;
+    case 'n': case 'N': next(); break;
+    case 'p': case 'P': prev(); break;
+    case 'm': case 'M': video.muted = !video.muted; break;
+    case 'f': case 'F': $('fs').click(); break;
+    case 'c': case 'C': { // cycle captions
+      const cc = $('cc'); if (!subs.length) break;
+      cc.selectedIndex = (cc.selectedIndex + 1) % cc.options.length; cc.onchange(); break;
+    }
+  }
+});
+
+load();
+</script>
+</body>
+</html>

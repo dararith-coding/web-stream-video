@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime / build output
+dist/
+build/
+coverage/
+.cache/
+*.pid
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Video content (large media files) - keep the folder itself
+src/videos/*
+!src/videos/.gitkeep
