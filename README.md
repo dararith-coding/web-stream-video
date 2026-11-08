@@ -15,6 +15,7 @@ A small self-hosted video streaming server and web player. Drop videos into `src
 - **External subtitle files** – put `.srt`, `.vtt`, `.ass` or `.ssa` files next to a video, named after it:
   `Movie.mkv` → `Movie.srt`, `Movie.en.srt`, `Movie.es.forced.srt`, `Movie.English.srt`.
   They appear in the CC menu marked "(file)". Non-UTF-8 files (e.g. Windows-1252) are handled.
+- **Seek-bar preview thumbnails** – hover (or drag on touch) over the seek bar to see a frame and timestamp; a sprite sheet is generated once per video with ffmpeg and cached
 - Remembers your last video, autoplay setting and caption language
 
 ## Requirements
@@ -58,6 +59,7 @@ Set in a `.env` file (optional):
 | `GET /api/videos` | List all videos (recursive) |
 | `GET /api/info?path=…` | Duration, whether transcoded, subtitle tracks (embedded + external) |
 | `GET /stream?path=…[&start=s]` | Stream a video (range requests; MKV via ffmpeg) |
+| `GET /thumbs/sprite.jpg?path=…` | Thumbnail sprite sheet for seek-bar previews (generated on first request) |
 | `GET /hls/stream.m3u8?path=…` | HLS playlist for Safari/iOS |
 | `GET /subtitle?path=…&index=N[&start=s]` | One embedded subtitle track as WebVTT |
 | `GET /subtitle?path=…&file=…[&start=s]` | One external subtitle file as WebVTT |
@@ -66,6 +68,6 @@ Paths are relative to `src/videos/` and are validated to stay inside it.
 
 ## Notes
 
-- HLS segments are cached in the system temp folder and cleared on every server start.
+- HLS segments are cached in the system temp folder and cleared on every server start. Thumbnail sprites are cached there too (small, kept between runs).
 - Picture-based subtitles (PGS/DVD) can't be converted and are not listed.
 - The server has no authentication – only expose it on a network you trust.

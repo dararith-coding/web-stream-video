@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -136,6 +138,61 @@ function externalSubs(videoFull) {
     });
 }
 
+// ---- Seek-bar preview thumbnails: one sprite sheet per video, generated once and cached ----
+const THUMB = { w: 160, h: 90, cols: 10 };
+const THUMB_ROOT = path.join(os.tmpdir(), 'stream-video-thumbs');
+fs.mkdirSync(THUMB_ROOT, { recursive: true });
+const thumbJobs = new Map(); // cache key -> Promise<file path>
+
+function thumbMeta(duration) {
+  if (!duration || duration < 1) return null;
+  const interval = Math.max(10, Math.ceil(duration / 400)); // cap at ~400 tiles
+  const count = Math.floor(duration / interval) + 1;
+  return { ...THUMB, interval, count, rows: Math.ceil(count / THUMB.cols) };
+}
+
+function buildSprite(full, meta) {
+  const st = fs.statSync(full);
+  const key = crypto.createHash('sha1').update(full + st.mtimeMs + st.size + meta.interval).digest('hex');
+  const out = path.join(THUMB_ROOT, key + '.jpg');
+  if (fs.existsSync(out)) return Promise.resolve(out);
+  if (thumbJobs.has(key)) return thumbJobs.get(key);
+
+  const vf = `fps=1/${meta.interval},scale=${meta.w}:${meta.h}:force_original_aspect_ratio=decrease,` +
+    `pad=${meta.w}:${meta.h}:(ow-iw)/2:(oh-ih)/2,tile=${meta.cols}x${meta.rows}`;
+  const tmp = out + '.tmp.jpg';
+  const job = new Promise((resolve, reject) => {
+    // -skip_frame nokey decodes keyframes only, which is plenty for thumbnails and fast.
+    const ff = spawn(FFMPEG, ['-v', 'error', '-y', '-skip_frame', 'nokey', '-i', full, '-map', '0:v:0',
+      '-an', '-sn', '-vf', vf, '-frames:v', '1', '-q:v', '5', tmp], { stdio: ['ignore', 'ignore', 'pipe'] });
+    ff.stderr.on('data', (d) => console.error('[ffmpeg thumbs]', d.toString().trim()));
+    ff.on('error', reject);
+    ff.on('close', (code) => {
+      if (code !== 0) return reject(new Error('thumbnail ffmpeg exited ' + code));
+      fs.renameSync(tmp, out);
+      resolve(out);
+    });
+  });
+  thumbJobs.set(key, job);
+  job.catch(() => {}).finally(() => thumbJobs.delete(key));
+  return job;
+}
+
+app.get('/thumbs/sprite.jpg', async (req, res) => {
+  const r = resolveVideo(req.query.path);
+  if (!r.full) return res.status(r.status).send(r.msg);
+  try {
+    const meta = thumbMeta((await probe(r.full)).duration);
+    if (!meta) return res.status(404).send('No thumbnails');
+    const file = await buildSprite(r.full, meta);
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.type('image/jpeg').sendFile(file);
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) res.status(500).send('Thumbnail generation failed');
+  }
+});
+
 app.get('/api/info', async (req, res) => {
   const r = resolveVideo(req.query.path);
   if (!r.full) return res.status(r.status).send(r.msg);
@@ -145,6 +202,7 @@ app.get('/api/info', async (req, res) => {
       duration: info.duration,
       transcoded: needsTranscode(r.full),
       subtitles: [...info.subtitles, ...externalSubs(r.full)],
+      thumbs: thumbMeta(info.duration),
     });
   } catch (err) {
     console.error(err);
@@ -228,8 +286,6 @@ app.get('/subtitle', async (req, res) => {
 
 // ---- HLS (for iOS/Safari, which can't play a piped MP4 stream) ----
 // ffmpeg segments the file once into a temp cache; playlist/segments are served from there.
-const os = require('os');
-const crypto = require('crypto');
 const HLS_ROOT = path.join(os.tmpdir(), 'stream-video-hls');
 fs.rmSync(HLS_ROOT, { recursive: true, force: true }); // cache is rebuilt per server run
 fs.mkdirSync(HLS_ROOT, { recursive: true });

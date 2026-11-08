@@ -30,7 +30,16 @@
   .seek-row { display: flex; align-items: center; gap: 10px; }
   .time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 48px; text-align: center; }
   input[type=range] { accent-color: var(--accent); cursor: pointer; }
-  #seek { flex: 1; }
+  #seek { width: 100%; display: block; margin: 0; }
+  #seekwrap { flex: 1; position: relative; }
+  #preview { position: absolute; bottom: calc(100% + 10px); left: 0; display: none; pointer-events: none;
+    flex-direction: column; align-items: center; gap: 4px; z-index: 5; }
+  #preview.show { display: flex; }
+  #thumb { width: 160px; height: 90px; border-radius: 6px; border: 2px solid #fff; background: #000 no-repeat;
+    box-shadow: 0 4px 14px rgba(0,0,0,.5); display: none; }
+  #thumb.ready { display: block; }
+  #ptime { background: rgba(0,0,0,.75); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 12px;
+    font-variant-numeric: tabular-nums; }
   .btn-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   button, select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
     border-radius: 8px; padding: 7px 11px; font: inherit; cursor: pointer; }
@@ -81,7 +90,10 @@
   <div class="controls">
     <div class="seek-row">
       <span class="time" id="cur">0:00</span>
-      <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="Seek">
+      <div id="seekwrap">
+        <div id="preview"><div id="thumb"></div><div id="ptime">0:00</div></div>
+        <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="Seek">
+      </div>
       <span class="time" id="dur">0:00</span>
     </div>
     <div class="btn-row">
@@ -251,6 +263,8 @@ function select(i, autoplay) {
   $('dur').textContent = '0:00';
   $('seek').value = 0;
   subs = [];
+  loadThumbs(v, null);
+  hidePreview();
   buildCcMenu();
   loadStream(0, hls);
   fetch('/api/info?path=' + encodeURIComponent(v.path))
@@ -258,6 +272,7 @@ function select(i, autoplay) {
     .then(info => {
       if (videos[current] !== v) return;
       if (transcoded) { totalDur = info.duration; $('dur').textContent = fmtTime(totalDur); }
+      loadThumbs(v, info.thumbs);
       subs = info.subtitles || [];
       buildCcMenu();
       applyTracks();
@@ -430,6 +445,47 @@ video.onvolumechange = () => {
   $('volume').value = video.muted ? 0 : video.volume;
 };
 video.onloadedmetadata = () => { $('dur').textContent = fmtTime(getDur()); };
+// ---- Seek-bar preview (hover with mouse, or drag on touch) ----
+let thumbs = null;     // sprite metadata for the current video, set once the image has loaded
+const preview = $('preview'), thumbEl = $('thumb'), seekEl = $('seek'), seekWrap = $('seekwrap');
+function loadThumbs(v, meta) {
+  thumbs = null;
+  thumbEl.classList.remove('ready');
+  if (!meta) return;
+  const url = '/thumbs/sprite.jpg?path=' + encodeURIComponent(v.path);
+  const img = new Image();
+  img.onload = () => {
+    if (videos[current] !== v) return;
+    thumbs = meta;
+    thumbEl.style.backgroundImage = `url("${url}")`;
+    thumbEl.style.backgroundSize = `${meta.cols * meta.w}px ${meta.rows * meta.h}px`;
+    thumbEl.classList.add('ready');
+  };
+  img.src = url; // generated on first request, cached afterwards
+}
+function showPreview(ratio) {
+  const dur = getDur();
+  if (!dur) return;
+  ratio = Math.max(0, Math.min(1, ratio));
+  const t = ratio * dur;
+  $('ptime').textContent = fmtTime(t);
+  if (thumbs) {
+    const i = Math.min(thumbs.count - 1, Math.floor(t / thumbs.interval));
+    thumbEl.style.backgroundPosition = `-${(i % thumbs.cols) * thumbs.w}px -${Math.floor(i / thumbs.cols) * thumbs.h}px`;
+  }
+  const w = seekWrap.clientWidth, pw = preview.offsetWidth || 160;
+  preview.style.left = Math.max(0, Math.min(w - pw, ratio * w - pw / 2)) + 'px';
+  preview.classList.add('show');
+}
+const hidePreview = () => preview.classList.remove('show');
+seekEl.addEventListener('pointermove', (e) => {
+  const r = seekEl.getBoundingClientRect();
+  showPreview((e.clientX - r.left) / r.width);
+});
+seekEl.addEventListener('pointerleave', () => { if (!seeking) hidePreview(); });
+seekEl.addEventListener('input', () => showPreview(seekEl.value / 1000)); // touch drag / keyboard
+seekEl.addEventListener('change', () => setTimeout(hidePreview, 400));
+seekEl.addEventListener('pointerup', () => setTimeout(hidePreview, 400));
 let seeking = false;
 video.ontimeupdate = () => {
   $('cur').textContent = fmtTime(getTime());
