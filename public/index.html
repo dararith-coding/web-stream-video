@@ -288,7 +288,6 @@ const toggle = () => video.paused ? video.play().catch(() => {}) : video.pause()
 const skip = (d) => seekTo(getTime() + d);
 
 $('play').onclick = toggle;
-video.onclick = () => { if (!suppressClick) toggle(); };
 $('next').onclick = next;
 $('prev').onclick = prev;
 $('back').onclick = () => skip(-10);
@@ -311,20 +310,23 @@ $('fs').onclick = toggleFs;
 const stage = $('stage');
 const hint = $('hint');
 let holdTimer = null, holdMode = null, revTimer = null, revTime = 0;
-let wasPlaying = false, suppressClick = false, downX = 0, downY = 0;
+let wasPlaying = false, downX = 0, downY = 0, downT = 0, downSide = null, tapCandidate = false, didHold = false;
 
 function startHold(side) {
   if (current < 0) return;
-  suppressClick = true;
+  didHold = true;
+  tapCandidate = false;
   holdMode = side;
   wasPlaying = !video.paused;
   if (side === 'right') {
     if (!wasPlaying) { holdMode = null; return; } // only speed up while playing
     video.playbackRate = 2;
+    hint.style.left = '50%';
     hint.textContent = '2× ▶▶';
   } else {
     video.pause();
     revTime = getTime();
+    hint.style.left = '50%';
     hint.textContent = '◀◀ 2×';
     // Browsers can't play backwards: step time back 0.2s every 100ms (= 2x).
     revTimer = setInterval(() => {
@@ -350,22 +352,69 @@ function endHold() {
   }
   holdMode = null;
   hint.classList.remove('show');
-  setTimeout(() => { suppressClick = false; }, 50); // swallow the click that follows a hold
 }
 stage.addEventListener('pointerdown', (e) => {
   if (e.button > 0 || $('error').contains(e.target)) return;
   const r = stage.getBoundingClientRect();
   const x = (e.clientX - r.left) / r.width;
   const side = x > 0.65 ? 'right' : x < 0.35 ? 'left' : null;
-  if (!side) return;
-  downX = e.clientX; downY = e.clientY;
-  holdTimer = setTimeout(() => startHold(side), 350);
+  downX = e.clientX; downY = e.clientY; downT = Date.now();
+  downSide = side; didHold = false; tapCandidate = true;
+  if (side) holdTimer = setTimeout(() => startHold(side), 350);
 });
 stage.addEventListener('pointermove', (e) => {
   // finger drifted before the hold began -> not a hold
-  if (holdTimer && Math.hypot(e.clientX - downX, e.clientY - downY) > 12) { clearTimeout(holdTimer); holdTimer = null; }
+  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 12) {
+    tapCandidate = false;
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  }
+});
+
+// ---- Taps: centre = play/pause; double-tap left/right = -10s/+10s (keep tapping to chain) ----
+let lastTap = { side: null, t: 0 }, tapTimer = null, skipTarget = null, skipApply = null, skipReset = null;
+function showSkip(side, total) {
+  hint.style.left = side === 'left' ? '22%' : '78%';
+  hint.textContent = side === 'left' ? `⏪ −${total}s` : `+${total}s ⏩`;
+  hint.classList.add('show');
+}
+let skipTotal = 0, skipSide = null;
+function skipTap(side) {
+  const d = side === 'left' ? -10 : 10;
+  if (skipTarget === null) skipTarget = getTime();
+  if (skipTarget === null || side !== skipSide) skipTotal = 0; // new direction -> restart the counter
+  skipSide = side;
+  const max = getDur() || Infinity;
+  skipTarget = Math.max(0, Math.min(max, skipTarget + d));
+  skipTotal += 10;
+  showSkip(side, skipTotal);
+  $('cur').textContent = fmtTime(skipTarget);
+  if (getDur()) $('seek').value = (skipTarget / getDur()) * 1000;
+  const apply = () => seekTo(skipTarget);
+  clearTimeout(skipApply);
+  if (transcoded) skipApply = setTimeout(apply, 350); // restarting a stream per tap would be slow
+  else apply();
+  clearTimeout(skipReset);
+  skipReset = setTimeout(() => { skipTarget = null; skipSide = null; hint.classList.remove('show'); }, 800);
+}
+function handleTap(side) {
+  const now = Date.now();
+  if (side && lastTap.side === side && now - lastTap.t < 300) {
+    clearTimeout(tapTimer);
+    lastTap.t = now;
+    skipTap(side);
+    return;
+  }
+  lastTap = { side, t: now };
+  if (!side) toggle();
+  else tapTimer = setTimeout(toggle, 300); // wait to see whether a second tap follows
+}
+stage.addEventListener('pointerup', (e) => {
+  const ok = tapCandidate && !didHold && Date.now() - downT < 500 && current >= 0;
+  tapCandidate = false;
+  if (ok) handleTap(downSide);
 });
 ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => stage.addEventListener(t, endHold));
+['pointercancel', 'pointerleave'].forEach(t => stage.addEventListener(t, () => { tapCandidate = false; }));
 stage.addEventListener('contextmenu', (e) => e.preventDefault());
 $('search').oninput = renderList;
 $('speed').onchange = () => { video.playbackRate = parseFloat($('speed').value); };
