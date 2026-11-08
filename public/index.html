@@ -15,6 +15,11 @@
   #player-area { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
   #stage { position: relative; background: #000; border-radius: 10px; overflow: hidden;
     flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  #stage { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: pan-y; }
+  #player-area:fullscreen, #player-area:-webkit-full-screen { background: var(--bg); }
+  #hint { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.65);
+    color: #fff; padding: 6px 14px; border-radius: 20px; font-weight: 600; display: none; pointer-events: none; }
+  #hint.show { display: block; }
   video { width: 100%; height: 100%; object-fit: contain; background: #000; }
   #error { position: absolute; inset: auto 12px 12px 12px; background: rgba(160,30,30,.9);
     padding: 10px 12px; border-radius: 8px; display: none; }
@@ -66,6 +71,7 @@
 <main id="player-area">
   <div id="stage">
     <video id="video" playsinline></video>
+    <div id="hint"></div>
     <div id="error"></div>
   </div>
   <div>
@@ -282,12 +288,85 @@ const toggle = () => video.paused ? video.play().catch(() => {}) : video.pause()
 const skip = (d) => seekTo(getTime() + d);
 
 $('play').onclick = toggle;
-video.onclick = toggle;
+video.onclick = () => { if (!suppressClick) toggle(); };
 $('next').onclick = next;
 $('prev').onclick = prev;
 $('back').onclick = () => skip(-10);
 $('fwd').onclick = () => skip(10);
-$('fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : $('stage').requestFullscreen();
+// Fullscreen the whole player (so controls stay visible). iPhone Safari has no element
+// fullscreen, only the native video player via webkitEnterFullscreen().
+function toggleFs() {
+  const el = $('player-area');
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    return;
+  }
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (req) req.call(el);
+  else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+}
+$('fs').onclick = toggleFs;
+
+// ---- Press & hold on the stage: right side = 2x forward, left side = 2x rewind ----
+const stage = $('stage');
+const hint = $('hint');
+let holdTimer = null, holdMode = null, revTimer = null, revTime = 0;
+let wasPlaying = false, suppressClick = false, downX = 0, downY = 0;
+
+function startHold(side) {
+  if (current < 0) return;
+  suppressClick = true;
+  holdMode = side;
+  wasPlaying = !video.paused;
+  if (side === 'right') {
+    if (!wasPlaying) { holdMode = null; return; } // only speed up while playing
+    video.playbackRate = 2;
+    hint.textContent = '2× ▶▶';
+  } else {
+    video.pause();
+    revTime = getTime();
+    hint.textContent = '◀◀ 2×';
+    // Browsers can't play backwards: step time back 0.2s every 100ms (= 2x).
+    revTimer = setInterval(() => {
+      revTime = Math.max(0, revTime - 0.2);
+      if (!transcoded) video.currentTime = revTime; // live preview; transcoded streams seek on release
+      $('cur').textContent = fmtTime(revTime);
+      if (getDur()) $('seek').value = (revTime / getDur()) * 1000;
+      if (revTime <= 0) clearInterval(revTimer);
+    }, 100);
+  }
+  hint.classList.add('show');
+}
+function endHold() {
+  clearTimeout(holdTimer);
+  holdTimer = null;
+  if (!holdMode) return;
+  if (holdMode === 'right') {
+    video.playbackRate = parseFloat($('speed').value);
+  } else {
+    clearInterval(revTimer);
+    seekTo(revTime);
+    if (wasPlaying) video.play().catch(() => {});
+  }
+  holdMode = null;
+  hint.classList.remove('show');
+  setTimeout(() => { suppressClick = false; }, 50); // swallow the click that follows a hold
+}
+stage.addEventListener('pointerdown', (e) => {
+  if (e.button > 0 || $('error').contains(e.target)) return;
+  const r = stage.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width;
+  const side = x > 0.65 ? 'right' : x < 0.35 ? 'left' : null;
+  if (!side) return;
+  downX = e.clientX; downY = e.clientY;
+  holdTimer = setTimeout(() => startHold(side), 350);
+});
+stage.addEventListener('pointermove', (e) => {
+  // finger drifted before the hold began -> not a hold
+  if (holdTimer && Math.hypot(e.clientX - downX, e.clientY - downY) > 12) { clearTimeout(holdTimer); holdTimer = null; }
+});
+['pointerup', 'pointercancel', 'pointerleave'].forEach(t => stage.addEventListener(t, endHold));
+stage.addEventListener('contextmenu', (e) => e.preventDefault());
 $('search').oninput = renderList;
 $('speed').onchange = () => { video.playbackRate = parseFloat($('speed').value); };
 $('loop').onchange = () => { video.loop = $('loop').checked; };
